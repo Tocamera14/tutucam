@@ -1,6 +1,31 @@
 import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts";
 
+const SUPABASE_URL = "https://uktctupghcmrqdxvtrsp.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVrdGN0dXBnaGNtcnFkeHZ0cnNwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NTg4MjQsImV4cCI6MjA5NDIzNDgyNH0.rGhmg6WIs5phqH5u_rAH7lY8V5a8G4e4yznSqJHjSG0";
+
+const db = {
+  async getAll() {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/records?order=id.desc`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+    return res.json();
+  },
+  async insert(record) {
+    await fetch(`${SUPABASE_URL}/rest/v1/records`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify(record)
+    });
+  },
+  async remove(id) {
+    await fetch(`${SUPABASE_URL}/rest/v1/records?id=eq.${id}`, {
+      method: "DELETE",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+  }
+};
+
 const CATEGORIES = ["底片相機", "數位相機", "玩具相機", "鏡頭", "底片", "小物/裝飾", "維修", "其他"];
 const PAYMENT_METHODS = ["現金", "Line Pay", "銀行轉帳"];
 const CAT_COLORS = ["#1a1a1a", "#e8d5b0", "#b5a48a", "#7a6e62", "#3a7d44", "#c0a87a", "#a0522d", "#888"];
@@ -8,10 +33,10 @@ const PAY_COLORS = ["#1a1a1a", "#e8a020", "#4a90d9"];
 
 const fmt = (n) => n.toLocaleString("zh-TW");
 const todayStr = () => new Date().toISOString().slice(0, 10);
-const STORAGE_KEY = "tutucam_records";
 
 export default function App() {
   const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [view, setView] = useState("pos");
   const [form, setForm] = useState({ item: "", category: "底片相機", amount: "", payment: "現金", note: "" });
   const [flash, setFlash] = useState(false);
@@ -20,25 +45,42 @@ export default function App() {
   const [reportMonth, setReportMonth] = useState(todayStr().slice(0, 7));
   const itemRef = useRef(null);
 
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-      setRecords(saved);
-    } catch {
-      setRecords([]);
-    }
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  function saveRecords(nr) {
-    setRecords(nr);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(nr)); } catch {}
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await db.getAll();
+      setRecords(Array.isArray(data) ? data : []);
+    } catch { setRecords([]); }
+    setLoading(false);
+  }
+
+  async function handleSubmit() {
+    if (!form.item.trim() || !form.amount || Number(form.amount) <= 0) return;
+    const rec = { id: Date.now(), date: todayStr(), item: form.item.trim(), category: form.category, amount: Number(form.amount), payment: form.payment, note: form.note.trim() };
+    setRecords(prev => [rec, ...prev]);
+    setForm({ item: "", category: form.category, amount: "", payment: form.payment, note: "" });
+    setFlash(true); setTimeout(() => setFlash(false), 600);
+    itemRef.current?.focus();
+    await db.insert(rec);
+  }
+
+  async function handleDelete(id) {
+    if (deleteConfirm === id) {
+      setRecords(prev => prev.filter(r => r.id !== id));
+      setDeleteConfirm(null);
+      await db.remove(id);
+    } else {
+      setDeleteConfirm(id);
+      setTimeout(() => setDeleteConfirm(null), 3000);
+    }
   }
 
   const todayRecords = records.filter((r) => r.date === todayStr());
   const todayTotal = todayRecords.reduce((s, r) => s + r.amount, 0);
   const filteredRecords = records.filter((r) => r.date === filterDate).sort((a, b) => b.id - a.id);
   const filteredTotal = filteredRecords.reduce((s, r) => s + r.amount, 0);
-
   const monthRecords = records.filter((r) => r.date.startsWith(reportMonth));
   const monthTotal = monthRecords.reduce((s, r) => s + r.amount, 0);
 
@@ -48,15 +90,8 @@ export default function App() {
     return { day: i + 1, total: records.filter((r) => r.date === d).reduce((s, r) => s + r.amount, 0) };
   });
 
-  const catData = CATEGORIES.map((cat) => ({
-    name: cat,
-    value: monthRecords.filter((r) => r.category === cat).reduce((s, r) => s + r.amount, 0),
-  })).filter((d) => d.value > 0);
-
-  const payData = PAYMENT_METHODS.map((p) => ({
-    name: p,
-    value: monthRecords.filter((r) => r.payment === p).reduce((s, r) => s + r.amount, 0),
-  })).filter((d) => d.value > 0);
+  const catData = CATEGORIES.map((cat) => ({ name: cat, value: monthRecords.filter((r) => r.category === cat).reduce((s, r) => s + r.amount, 0) })).filter((d) => d.value > 0);
+  const payData = PAYMENT_METHODS.map((p) => ({ name: p, value: monthRecords.filter((r) => r.payment === p).reduce((s, r) => s + r.amount, 0) })).filter((d) => d.value > 0);
 
   const monthTrend = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(); d.setMonth(d.getMonth() - (5 - i));
@@ -65,25 +100,8 @@ export default function App() {
   });
 
   const itemMap = {};
-  monthRecords.forEach((r) => {
-    if (!itemMap[r.item]) itemMap[r.item] = { count: 0, total: 0 };
-    itemMap[r.item].count++; itemMap[r.item].total += r.amount;
-  });
+  monthRecords.forEach((r) => { if (!itemMap[r.item]) itemMap[r.item] = { count: 0, total: 0 }; itemMap[r.item].count++; itemMap[r.item].total += r.amount; });
   const topItems = Object.entries(itemMap).sort((a, b) => b[1].total - a[1].total).slice(0, 5);
-
-  function handleSubmit() {
-    if (!form.item.trim() || !form.amount || Number(form.amount) <= 0) return;
-    const rec = { id: Date.now(), date: todayStr(), item: form.item.trim(), category: form.category, amount: Number(form.amount), payment: form.payment, note: form.note.trim() };
-    saveRecords([rec, ...records]);
-    setForm({ item: "", category: form.category, amount: "", payment: form.payment, note: "" });
-    setFlash(true); setTimeout(() => setFlash(false), 600);
-    itemRef.current?.focus();
-  }
-
-  function handleDelete(id) {
-    if (deleteConfirm === id) { saveRecords(records.filter((r) => r.id !== id)); setDeleteConfirm(null); }
-    else { setDeleteConfirm(id); setTimeout(() => setDeleteConfirm(null), 3000); }
-  }
 
   const groupedDates = [...new Set(records.map((r) => r.date))].sort((a, b) => b.localeCompare(a));
   const navItems = [{ key: "pos", label: "收銀", icon: "💴" }, { key: "history", label: "紀錄", icon: "📋" }, { key: "report", label: "報表", icon: "📊" }];
@@ -101,6 +119,8 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {loading && <div style={s.loadingBar}>載入中...</div>}
 
       {view === "pos" && (
         <div style={s.layout}>
@@ -320,6 +340,7 @@ const s = {
   tabs: { display: "flex", gap: 2 },
   tab: { background: "transparent", border: "none", color: "#666", padding: "5px 10px", borderRadius: 20, cursor: "pointer", fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 },
   tabActive: { background: "#e8d5b0", color: "#1a1a1a" },
+  loadingBar: { textAlign: "center", padding: "12px", fontSize: 13, color: "#aaa" },
   layout: { maxWidth: 540, margin: "0 auto", padding: "16px 14px 40px", display: "flex", flexDirection: "column", gap: 14 },
   summaryCard: { background: "#1a1a1a", borderRadius: 16, padding: "22px 24px", textAlign: "center", transition: "background 0.2s" },
   summaryFlash: { background: "#3a7d44" },
